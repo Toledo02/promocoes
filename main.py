@@ -2,8 +2,14 @@
 
 Job único, disparado pelo cron 1–2 vezes ao dia. Pipeline linear:
 
-    load_settings → fetch (canais em paralelo) → filtros do histórico → select_offers
-                  → format/LLM → sanitize_html → send → grava o histórico só se enviou
+    load_settings → fetch (canais em paralelo) → filtros do histórico → generate_digest
+                  (escolhe + formata; LLM por padrão, template como fallback)
+                  → sanitize_html → send → grava o histórico só se enviou
+
+`generate_digest` também decide **quais** ofertas publicar quando o LLM está ligado — não é só
+formatação. Por isso `main.py` não corta o pool antes de chamá-la: cortar em `max_items` aqui
+seria fazer a escolha por ordem de chegada e nunca deixar o modelo comparar desconto/preço entre
+os candidatos, que é exatamente o que se pediu para ele fazer.
 """
 
 from __future__ import annotations
@@ -178,26 +184,39 @@ async def _run_pipeline(args: argparse.Namespace) -> int:
     history_store.filter_seen_offers(payload, history, repeat_window)
     history_store.filter_published_items(payload, history, sends_in_lookback, lookback_days)
 
-    offers = digest.select_offers(
-        (payload.get("promotions") or {}).get("offers") or [],
-        max_items=int(promo_cfg.get("max_items", 8)),
-        max_per_coupon=int(promo_cfg.get("max_per_coupon", 2)),
-    )
-    logger.info("%s candidatos coletados, %s ofertas selecionadas", collected, len(offers))
-
-    alerts = _build_alerts(failures, collected, history, offers, silent, settings)
+    pool = (payload.get("promotions") or {}).get("offers") or []
+    logger.info("%s candidatos coletados, %s restantes após o histórico", collected, len(pool))
 
     min_items = int(settings.orchestrator.get("min_items_for_send", 1))
-    if len(offers) < min_items:
-        logger.warning("Nada a enviar: %s ofertas (mínimo %s)", len(offers), min_items)
+    if len(pool) < min_items:
+        # Sem candidato para julgar, nem vale chamar o LLM: nada muda o resultado.
+        logger.warning("Nada a enviar: %s candidatos (mínimo %s)", len(pool), min_items)
+        alerts = _build_alerts(failures, collected, history, pool, silent, settings)
         if args.dry_run:
             _preview("", [], alerts)
         elif alerts:
             _notify("\n\n".join(alerts), settings)
         return 0
 
-    message = generate_digest(offers, settings)
-    logger.info("Mensagem pronta (%s chars)", len(message))
+    message, offers = generate_digest(
+        pool,
+        settings,
+        max_items=int(promo_cfg.get("max_items", 8)),
+        max_per_coupon=int(promo_cfg.get("max_per_coupon", 2)),
+    )
+    logger.info("%s ofertas publicadas de %s candidatos (%s chars)", len(offers), len(pool), len(message))
+
+    alerts = _build_alerts(failures, collected, history, offers, silent, settings)
+
+    if len(offers) < min_items:
+        # Pool tinha candidato, mas nenhuma ganhou do julgamento (LLM) ou sobreviveu à
+        # deduplicação (template) até o mínimo — mesmo critério de "não manda nada hoje".
+        logger.warning("Nada a enviar: %s ofertas publicadas (mínimo %s)", len(offers), min_items)
+        if args.dry_run:
+            _preview("", [], alerts)
+        elif alerts:
+            _notify("\n\n".join(alerts), settings)
+        return 0
 
     if args.dry_run:
         _preview(message, offers, alerts)

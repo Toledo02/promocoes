@@ -1,8 +1,12 @@
-"""Escolha e formatação do que vai ao ar.
+"""Formatação e seleção mecânica do que vai ao ar.
 
-Duas etapas que o LLM não faz — e não deve fazer: qual oferta entra (`select_offers`) e como a
-linha é montada (`format_digest`). Preço, cupom e link são copiados do post; o modelo, quando
-ativado, só reescreve o texto ao redor (ver `core/ai_engine.py`).
+`dedupe_offers` resolve o que é regra de negócio, não julgamento de qualidade: mesmo produto
+duas vezes na leva e teto por campanha. Isso nunca muda, LLM ligado ou não. Qual das ofertas
+restantes é a "melhor" — maior desconto, preço final, produto reconhecível vs. banner genérico
+— é julgamento sobre texto livre, e por isso é o LLM quem decide quando está ativado
+(`core/ai_engine.generate_digest`); `select_offers` aqui é só o critério mecânico de
+fallback (ordem de chegada) usado quando o LLM está desligado ou falha. `format_digest` monta a
+linha; preço, cupom e link são sempre copiados do post, nunca calculados.
 """
 
 from __future__ import annotations
@@ -43,22 +47,24 @@ _HEAD_TAIL_NOISE = {
 }
 
 
-def select_offers(
+def dedupe_offers(
     offers: list[dict[str, Any]],
-    max_items: int = 8,
     max_per_coupon: int = 2,
 ) -> list[dict[str, Any]]:
-    """Corte final: mesmo produto, teto por campanha e teto de itens, nessa ordem.
+    """Regra de negócio, não julgamento: mesmo produto e teto por campanha, sem cortar por
+    quantidade — quem faz o corte final é `select_offers` (fallback) ou o LLM (padrão).
 
     O teto por cupom fica aqui, e não no scraper, porque tem que valer sobre o que é
-    **publicado**. Aplicado ao pool, uma campanha gastaria as duas vagas com ofertas que o
-    histórico depois removeria, e a mensagem sairia sem nenhuma.
+    **publicado**. Aplicado ao pool bruto do scraper, uma campanha gastaria as duas vagas com
+    ofertas que o histórico depois removeria, e a mensagem sairia sem nenhuma.
 
     A checagem de mesmo produto é a terceira anti-repetição do projeto, e a única que olha para
     dentro da leva atual: as duas do histórico comparam com o que já foi enviado e não veem o
     mesmo achado chegando por dois canais na mesma hora — que é o corriqueiro, porque os canais
     copiam uns aos outros. A deduplicação exata do scraper não pega esse caso: o texto é
-    reescrito, o preço é arredondado e a chave muda.
+    reescrito, o preço é arredondado e a chave muda. Mantém a primeira ocorrência — quando o LLM
+    está ligado ele já resolveu isso a favor do melhor preço antes de chegar aqui (ver
+    `core/ai_engine.py`); esta função só entra em ação quando o LLM está desligado ou falhou.
     """
     chosen: list[dict[str, Any]] = []
     chosen_marks: list[set[str]] = []
@@ -78,10 +84,21 @@ def select_offers(
 
         chosen.append(offer)
         chosen_marks.append(marks)
-        if len(chosen) >= max_items:
-            break
 
     return chosen
+
+
+def select_offers(
+    offers: list[dict[str, Any]],
+    max_items: int = 8,
+    max_per_coupon: int = 2,
+) -> list[dict[str, Any]]:
+    """Corte mecânico por ordem de chegada: `dedupe_offers` truncado em `max_items`.
+
+    É o critério do template (LLM desligado) e o de segurança quando o LLM falha — nos dois
+    casos não há julgamento de qualidade disponível, só ordem de chegada mesmo.
+    """
+    return dedupe_offers(offers, max_per_coupon)[:max_items]
 
 
 def offer_keys(offers: list[dict[str, Any]]) -> list[str]:

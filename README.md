@@ -81,10 +81,17 @@ Cada oferta ocupa até três linhas, e tudo que é número vem copiado do post:
   [Ver no canal] @promobit
 ```
 
-O nome do produto vai em negrito, o cupom em negrito, e o link aponta para o post no canal. Se
-`formatting.use_llm` estiver ligado, o modelo reescreve a primeira linha para tirar "CORRAM",
-emoji repetido e caixa alta — mas preço, cupom e link continuam vindo do Python, e se a API
-falhar a mensagem sai pelo template mesmo.
+O nome do produto vai em negrito, o cupom em negrito, e o link aponta para o post no canal.
+
+Com `formatting.use_llm` ligado (o padrão), o modelo faz mais que reescrever: ele recebe **todos**
+os candidatos do dia — não só os 8 que vão ao ar — e escolhe quais publicar, comparando desconto,
+preço final e o quanto o post identifica um produto real (vs. banner de loja tipo "tudo abaixo de
+R$ X"). Quando dois candidatos são o mesmo produto vindo de canais diferentes, ele mantém o de
+melhor preço e descarta o outro — na prática isso já pegou dois posts idênticos de um mesmo
+produto (ex.: a mesma fralda anunciada em dois canais) e manteve só um. Preço, cupom e link
+continuam vindo do post, verbatim: o modelo nunca calcula, só compara. Se a API falhar, ou a
+resposta citar um link que não veio nos candidatos (oferta inventada), a mensagem sai pelo
+template — que aí sim seleciona por ordem de chegada, sem julgamento nenhum.
 
 ## Configuração (`config/config.yaml`)
 
@@ -105,7 +112,7 @@ promotions:
 Os canais são intercalados em **round-robin** antes do corte: concatenar e truncar faria o
 primeiro canal ocupar todos os slots. Canal muito prolífico precisa de `per_channel` baixo.
 
-## As três anti-repetições
+## As quatro anti-repetições
 
 Elas não são intercambiáveis — cada uma pega um caso que as outras não pegam:
 
@@ -114,11 +121,13 @@ Elas não são intercambiáveis — cada uma pega um caso que as outras não peg
 | `scrapers/promotions._interleave` | chave exata do texto, dentro da leva | o mesmo post copiado literalmente entre canais |
 | `core/history.filter_seen_offers` | chave exata contra o que já foi enviado | o repost do mesmo achado amanhã |
 | `core/history.filter_published_items` | nomes próprios contra o texto dos envios recentes | o mesmo produto reescrito por outro canal |
-| `core/digest.select_offers` | nomes próprios entre as ofertas da leva atual | o mesmo produto chegando por dois canais agora |
+| mesmo produto na leva atual | o LLM compara os candidatos (regra do prompt); sem LLM, `core/digest.dedupe_offers` por nome próprio | o mesmo produto chegando por dois canais agora |
 
 A comparação por nome próprio é por proporção, não exata ("Echo Dot 5ª geração" × "Echo Dot 5"),
 e tem duas travas contra falso positivo: nomes presentes em *todos* os envios recentes são pano
-de fundo e são ignorados ("Amazon"), e pelo menos dois nomes precisam coincidir de fato.
+de fundo e são ignorados ("Amazon"), e pelo menos dois nomes precisam coincidir de fato. Sem LLM
+(ou se a API falhar), a última linha vira mecânica: mantém sempre a primeira ocorrência, porque
+comparar preço em Python sem NLP não dá para fazer direito — só o modelo faz isso.
 
 ## Resiliência
 

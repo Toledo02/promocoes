@@ -12,8 +12,8 @@ import asyncio
 from datetime import datetime, timedelta
 
 from config.settings import Settings
-from core import history
-from core.ai_engine import _looks_valid, generate_digest
+from core import ai_engine, history
+from core.ai_engine import _looks_valid, _resolve_chosen, generate_digest
 from core.digest import format_digest, offer_keys, select_offers
 from core.telegram_sender import inspect_message
 from core.utils import now_local, offer_key
@@ -393,28 +393,108 @@ def test_rotacao_muda_o_canal_que_abre_a_fila(monkeypatch):
 # --------------------------------------------------------------------------- LLM opcional
 
 
-def _settings(**formatting) -> Settings:
-    return Settings(config={"formatting": formatting})
+def _settings(llm_api_key: str = "", **formatting) -> Settings:
+    return Settings(config={"formatting": formatting}, llm_api_key=llm_api_key)
 
 
 def test_sem_llm_configurado_o_resumo_e_o_template():
     ofertas = [_oferta("Echo Dot 5 por R$ 229")]
-    assert generate_digest(ofertas, _settings(use_llm=False), AS_OITO) == format_digest(
-        ofertas, AS_OITO
-    )
+    mensagem, escolhidas = generate_digest(ofertas, _settings(use_llm=False), now=AS_OITO)
+
+    assert mensagem == format_digest(ofertas, AS_OITO)
+    assert escolhidas == ofertas
 
 
 def test_use_llm_sem_chave_cai_no_template():
     ofertas = [_oferta("Echo Dot 5 por R$ 229")]
-    assert generate_digest(ofertas, _settings(use_llm=True), AS_OITO) == format_digest(
-        ofertas, AS_OITO
-    )
+    mensagem, escolhidas = generate_digest(ofertas, _settings(use_llm=True), now=AS_OITO)
+
+    assert mensagem == format_digest(ofertas, AS_OITO)
+    assert escolhidas == ofertas
 
 
 def test_looks_valid_rejeita_resposta_em_prosa():
-    assert _looks_valid("Hoje tem várias ofertas boas, confira no canal.", [{}, {}]) is False
+    assert _looks_valid("Hoje tem várias ofertas boas, confira no canal.", [{}, {}], 8) is False
 
 
-def test_looks_valid_aceita_resposta_no_formato():
-    resposta = "<b>Hoje</b>\n\n━━━━━━━━━━━━━━━\n<b>🛒 ACHADOS & PROMOÇÕES</b>\n\n• um\n\n• dois"
-    assert _looks_valid(resposta, [{}, {}]) is True
+def test_looks_valid_aceita_selecao_parcial_com_links_conhecidos():
+    # O normal agora é o modelo descartar a maioria dos candidatos — não dá mais para exigir
+    # uma linha por oferta de entrada.
+    ofertas = [_oferta(f"Produto {i} por R$ {i}0", canal=f"c{i}") for i in range(5)]
+    resposta = (
+        "<b>Hoje</b>\n\n━━━━━━━━━━━━━━━\n<b>🛒 ACHADOS & PROMOÇÕES</b>\n\n"
+        f'• um <a href="{ofertas[0]["link"]}">[Ver no canal]</a>\n\n'
+        f'• dois <a href="{ofertas[2]["link"]}">[Ver no canal]</a>'
+    )
+    assert _looks_valid(resposta, ofertas, 8) is True
+
+
+def test_looks_valid_rejeita_link_que_nao_veio_nos_candidatos():
+    # O caso mais caro: um link fora da lista é oferta inventada.
+    ofertas = [_oferta("Produto por R$ 10")]
+    resposta = (
+        "<b>Hoje</b>\n\n━━━━━━━━━━━━━━━\n<b>🛒 ACHADOS & PROMOÇÕES</b>\n\n"
+        '• algo <a href="https://t.me/outro/999">[Ver no canal]</a>'
+    )
+    assert _looks_valid(resposta, ofertas, 8) is False
+
+
+def test_looks_valid_rejeita_mais_blocos_que_o_pedido():
+    ofertas = [_oferta(f"Produto {i} por R$ {i}0", canal=f"c{i}") for i in range(3)]
+    resposta = (
+        "<b>Hoje</b>\n\n━━━━━━━━━━━━━━━\n<b>🛒 ACHADOS & PROMOÇÕES</b>\n\n"
+        + "\n\n".join(f'• item <a href="{o["link"]}">[Ver no canal]</a>' for o in ofertas)
+    )
+    assert _looks_valid(resposta, ofertas, max_items=2) is False
+
+
+def test_looks_valid_rejeita_cupom_acima_do_teto():
+    ofertas = [_oferta(f"Produto {i} por R$ {i}0", canal=f"c{i}", cupom="MESMO") for i in range(3)]
+    resposta = (
+        "<b>Hoje</b>\n\n━━━━━━━━━━━━━━━\n<b>🛒 ACHADOS & PROMOÇÕES</b>\n\n"
+        + "\n\n".join(f'• item <a href="{o["link"]}">[Ver no canal]</a>' for o in ofertas)
+    )
+    assert _looks_valid(resposta, ofertas, max_items=8, max_per_coupon=2) is False
+
+
+def test_resolve_chosen_usa_a_ordem_da_resposta_nao_do_pool():
+    ofertas = [_oferta(f"Produto {i} por R$ {i}0", canal=f"c{i}") for i in range(3)]
+    resposta = (
+        f'<a href="{ofertas[2]["link"]}">x</a> texto <a href="{ofertas[0]["link"]}">x</a>'
+    )
+    assert [o["channel"] for o in _resolve_chosen(resposta, ofertas)] == ["c2", "c0"]
+
+
+def test_generate_digest_devolve_so_as_ofertas_escolhidas_pelo_modelo(monkeypatch):
+    # O que vai para o histórico é o que o modelo de fato publicou, nunca o pool inteiro
+    # oferecido — senão candidato descartado seria suprimido amanhã sem nunca ter ido ao ar.
+    ofertas = [_oferta(f"Produto {i} por R$ {i}0", canal=f"c{i}") for i in range(5)]
+    resposta = (
+        "<b>Hoje</b>\n\n━━━━━━━━━━━━━━━\n<b>🛒 ACHADOS & PROMOÇÕES</b>\n\n"
+        f'• escolhido <a href="{ofertas[3]["link"]}">[Ver no canal]</a>'
+    )
+    monkeypatch.setattr(ai_engine, "_generate_once", lambda model, prompt, settings: resposta)
+
+    mensagem, escolhidas = generate_digest(
+        ofertas, _settings(llm_api_key="fake", use_llm=True), max_items=8
+    )
+
+    assert mensagem == resposta
+    assert [o["channel"] for o in escolhidas] == ["c3"]
+
+
+def test_generate_digest_cai_no_template_quando_o_modelo_inventa_link(monkeypatch):
+    ofertas = [_oferta("Produto por R$ 10")]
+    resposta_invalida = (
+        "<b>Hoje</b>\n\n━━━━━━━━━━━━━━━\n<b>🛒 ACHADOS & PROMOÇÕES</b>\n\n"
+        '• algo <a href="https://t.me/outro/999">[Ver no canal]</a>'
+    )
+    monkeypatch.setattr(ai_engine, "_generate_once", lambda model, prompt, settings: resposta_invalida)
+    monkeypatch.setattr(ai_engine.time, "sleep", lambda segundos: None)
+
+    mensagem, escolhidas = generate_digest(
+        ofertas, _settings(llm_api_key="fake", use_llm=True), max_items=8
+    )
+
+    assert mensagem == format_digest(ofertas)
+    assert escolhidas == ofertas

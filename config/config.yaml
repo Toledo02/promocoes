@@ -38,13 +38,18 @@ promotions:
   # Teto por canal antes do round-robin. Canal prolífico (dezenas de posts/dia) afogaria os
   # outros sem isto.
   per_channel: 8
-  # Quantas ofertas vão ao ar. O corte é feito depois do histórico, não no scraper.
+  # Teto de ofertas publicadas. Com `formatting.use_llm` ligado é o modelo quem escolhe QUAIS,
+  # entre todos os candidatos pós-histórico — não é um corte por ordem de chegada. Sem LLM (ou
+  # se a API falhar), aí sim é ordem de chegada (`core/digest.select_offers`).
   max_items: 8
-  # Candidatos coletados além do que será exibido, para o corte anti-repetição ter de onde
-  # tirar substituto — sem folga, o segundo envio do dia sairia pela metade.
+  # Candidatos coletados além do que será exibido. Com o LLM ligado isto não é só folga para
+  # substituto do rodízio (como era antes): é o tamanho do lote que o modelo de fato compara
+  # para julgar qual é a melhor oferta — pool maior dá mais material de comparação.
   candidate_pool: 30
   # A mesma campanha em cinco produtos tomava a seção inteira: num jornal real, 3 dos 4
-  # achados eram o mesmo cupom OFERTA8DO8.
+  # achados eram o mesmo cupom OFERTA8DO8. Com LLM ligado isto também vira instrução do prompt
+  # (o modelo já respeita o teto ao escolher); `core/ai_engine._looks_valid` confere e descarta
+  # a resposta para o template se algum cupom passar do teto entre as ofertas escolhidas.
   max_per_coupon: 2
   # Comprimento mínimo do post. Canal que posta por imagem deixa texto de 3 palavras.
   min_text_length: 25
