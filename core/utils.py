@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -124,6 +125,66 @@ def offer_key(text: str) -> str:
     a mesma chave nos dois, senão a oferta publicada hoje não é reconhecida amanhã.
     """
     return re.sub(r"[^\w]", "", (text or "").lower(), flags=re.UNICODE)[:60]
+
+
+# Tokens que começam frase ou ligam oração: aparecem em maiúscula sem identificar produto
+# nenhum. Inclui o vocabulário fixo do anúncio de promoção, que abre quase toda mensagem em
+# maiúscula ("Cupom", "Frete", "Menor preço") e faria duas ofertas sem nada em comum parecerem
+# a mesma.
+NOT_ENTITIES = {
+    "a", "o", "as", "os", "um", "uma", "de", "do", "da", "dos", "das", "em", "no", "na", "nos",
+    "nas", "por", "para", "com", "sem", "sobre", "apos", "ate", "entre", "contra", "durante",
+    "que", "quem", "como", "quando", "onde", "mais", "menos", "novo", "nova", "novos", "novas",
+    "veja", "confira", "saiba", "entenda", "the", "and", "for", "with", "from", "this", "that",
+    "cupom", "cupons", "codigo", "desconto", "descontos", "oferta", "ofertas", "promocao",
+    "promocoes", "preco", "precos", "menor", "maior", "frete", "gratis", "gratuito", "compre",
+    "aproveite", "corram", "ultimas", "unidades", "link", "loja", "site", "app", "hoje",
+    "somente", "apenas", "usando", "pix", "boleto", "cartao", "parcelado", "avista", "reais",
+    "achado", "achados", "baixou", "caiu", "leve", "pague", "ganhe", "receba", "voce", "seu",
+    "sua", "agora", "ainda", "muito", "todos", "todas", "acabou", "volta", "voltou", "chegou",
+}
+
+_ENTITY_RE = re.compile(r"\b[A-ZÀ-ÖØ-Þ][\wÀ-ÿ'’-]{2,}\b")
+
+
+def fold(text: str) -> str:
+    """Minúsculas e sem acento, para comparar textos de origens diferentes."""
+    folded = unicodedata.normalize("NFKD", (text or "").lower())
+    return "".join(char for char in folded if not unicodedata.combining(char))
+
+
+def entities(text: str) -> set[str]:
+    """Nomes próprios do texto — marca, modelo e loja, que é o que identifica o produto.
+
+    Comparar palavra a palavra não funciona: "Echo Dot 5ª geração por R$ 229 com frete grátis"
+    e "SÓ HOJE! Echo Dot 5 saindo por 229 reais na Amazon" são a mesma oferta e quase não
+    compartilham palavra comum. Nome próprio atravessa a reescrita do canal; o resto, não.
+
+    O genitivo é aparado porque "Levi's" e "Levis" precisam bater.
+
+    Mora aqui, e não junto de quem filtra, porque duas etapas distintas fazem a mesma pergunta
+    com ela: se a oferta já foi publicada num envio anterior (`core/history`) e se duas ofertas
+    da mesma leva são o mesmo produto vindo de canais diferentes (`core/digest`).
+    """
+    found: set[str] = set()
+    for token in _ENTITY_RE.findall(text or ""):
+        folded = re.sub(r"['’]s$", "", fold(token)).strip("'’-")
+        if len(folded) >= 3 and folded not in NOT_ENTITIES:
+            found.add(folded)
+    return found
+
+
+def same_item(a: set[str], b: set[str], min_entities: int = 2, min_ratio: float = 0.6) -> bool:
+    """Dois conjuntos de nomes próprios descrevem o mesmo produto?
+
+    Proporção, não igualdade: um canal escreve "Echo Dot 5ª geração" e o outro "Echo Dot 5".
+    E pelo menos `min_entities` nomes precisam coincidir de fato — com um só, "Samsung"
+    bastaria para casar duas ofertas sem relação.
+    """
+    if not a or not b:
+        return False
+    common = len(a & b)
+    return common >= min_entities and common / len(a) >= min_ratio
 
 
 def now_local() -> datetime:

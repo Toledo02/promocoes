@@ -1,33 +1,41 @@
-# Jornal Matinal — Agente de Clipping Pessoal
+# Achados & Promoções — agente de curadoria de ofertas
 
-Agente Python config-driven que coleta dados de múltiplas fontes, consolida via LLM (Google Gemini)
-e envia um jornal matinal personalizado pelo Telegram.
+Agente Python config-driven que lê canais públicos de promoção do Telegram, filtra o ruído,
+deduplica, limita repetição por campanha e por produto, e envia um resumo enxuto pelo Telegram
+1–2 vezes ao dia. O link publicado é sempre o do **post no canal de origem** — é lá que está o
+cupom.
+
+Nasceu da seção `🛒 ACHADOS & PROMOÇÕES` do [Jornal Matinal](PROMOCOES_PROJETO.md), que virou
+projeto próprio para poder varrer muitos canais em vez dos três que cabiam num jornal
+generalista. A especificação original está em [PROMOCOES_PROJETO.md](PROMOCOES_PROJETO.md).
+
+**Não é** comparador de preço, não é bot de afiliados (nenhum link é reescrito) e não é serviço
+24/7: roda como job único via cron, sem webhook e sem processo vivo.
 
 ## Estrutura
 
 ```
-Jornal/
+Promocoes/
 ├── config/
 │   ├── .env              # Segredos (não versionado)
 │   ├── .env.example      # Template de variáveis
-│   ├── config.yaml       # Fontes, URLs, times, produtos
+│   ├── config.yaml       # Canais, filtros, janelas
 │   └── settings.py       # Carregador de config
-├── scrapers/             # Coletores de dados
-├── core/                 # IA e Telegram
-├── tests/                # Testes das funções puras
-├── main.py               # Orquestrador
-└── PLANO.md              # Backlog de melhorias com diagnóstico
+├── scrapers/
+│   └── promotions.py     # Leitura dos canais (t.me/s/<canal>)
+├── core/
+│   ├── digest.py         # Corte final + template da mensagem
+│   ├── history.py        # Histórico de 30 dias + anti-repetição
+│   ├── ai_engine.py      # LLM opcional (só reescreve o texto)
+│   ├── telegram_sender.py
+│   └── utils.py
+├── tests/                # Testes das funções puras, sem rede
+└── main.py               # Orquestrador
 ```
-
-## Requisitos
-
-- Python 3.10+
-- VPS Linux (ex.: Oracle Cloud Infrastructure) ou máquina local
 
 ## Instalação
 
 ```bash
-cd /path/to/Jornal
 python -m venv .venv
 source .venv/bin/activate   # Linux/macOS
 # .venv\Scripts\activate    # Windows
@@ -36,97 +44,129 @@ pip install -r requirements.txt
 cp config/.env.example config/.env
 ```
 
-Edite `config/.env`:
-
 | Variável | Descrição |
 |----------|-----------|
-| `LLM_API_KEY` | Chave do Gemini ([AI Studio](https://aistudio.google.com/apikey)) |
-| `LLM_MODEL` | Modelo (padrão: `gemini-3.6-flash`; os `pro` dão 429 no plano gratuito) |
-| `LLM_FALLBACK_MODELS` | Modelos tentados se o principal der 503 |
 | `TELEGRAM_BOT_TOKEN` | Token do BotFather |
-| `TELEGRAM_CHAT_ID` | ID do chat de destino |
-| `FOOTBALL_DATA_TOKEN` | Jogos e placares ([football-data.org](https://www.football-data.org/client/register), grátis) |
-| `AWESOMEAPI_TOKEN` | Opcional; a AwesomeAPI é a última fonte da cadeia de cotações |
+| `TELEGRAM_CHAT_ID` | Canal/chat de destino |
+| `LLM_API_KEY` | **Opcional.** Só usada com `formatting.use_llm: true` |
 
-Os nomes `OPENAI_*` continuam aceitos por compatibilidade (herança de quando o projeto usava
-OpenAI), mas os `LLM_*` têm precedência.
+Sem chave de API o agente funciona igual: a mensagem é montada pelo template em Python, que é o
+caminho padrão.
 
 ## Execução
 
 ```bash
-python main.py                      # pipeline completo: coleta, gera e envia
-python main.py --dry-run            # gera e imprime no terminal, sem enviar
-python main.py --no-llm             # só coleta e imprime o payload (não gasta requisição)
-python main.py --only weather,finance   # roda um subconjunto de scrapers
+python main.py                            # coleta, monta e envia
+python main.py --dry-run                  # monta e imprime, sem enviar
+python main.py --no-llm                   # só coleta e imprime o payload cru
+python main.py --no-llm --only promotions # o mesmo, restrito a uma fonte
 ```
 
-Testes:
+Testes (sem rede):
 
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-Logs diários em `logs/journal_YYYYMMDD.log` (data no fuso de São Paulo).
+Logs diários em `logs/promocoes_YYYYMMDD.log` (data no fuso de São Paulo).
 
-## Configuração dinâmica (`config/config.yaml`)
+## Como a mensagem é montada
 
-**Regra de ouro:** URLs, feeds, seletores, times e produtos ficam no YAML — não no código.
+Cada oferta ocupa até três linhas, e tudo que é número vem copiado do post:
 
-```yaml
-rss_feeds:
-  tech:
-    - "https://techcrunch.com/feed/"
-    - "https://seu-novo-feed.com/rss"   # basta adicionar aqui
-
-weather:
-  city: "Curitiba"
-  lat: -25.4284
-  lon: -49.2733
+```
+• Echo Dot 5ª geração — por R$ 229 (menor preço já visto)
+  cupom ECHO20
+  [Ver no canal] @promobit
 ```
 
-Os feeds são intercalados em round-robin antes do corte por `max_items_per_category`, então cada
-fonte contribui proporcionalmente. Entradas mais velhas que `max_age_hours` são descartadas.
+O nome do produto vai em negrito, o cupom em negrito, e o link aponta para o post no canal. Se
+`formatting.use_llm` estiver ligado, o modelo reescreve a primeira linha para tirar "CORRAM",
+emoji repetido e caixa alta — mas preço, cupom e link continuam vindo do Python, e se a API
+falhar a mensagem sai pelo template mesmo.
+
+## Configuração (`config/config.yaml`)
+
+**Regra de ouro:** canais, janelas, ruído e rodapés ficam no YAML — não no código.
+
+```yaml
+promotions:
+  telegram_channels: ["ofertasdecomputador", "promotop", ...]
+  max_age_hours: 24
+  per_channel: 8            # teto por canal antes do round-robin
+  candidate_pool: 30        # candidatos coletados
+  max_items: 8              # ofertas publicadas
+  max_per_coupon: 2         # teto por campanha
+  noise_patterns: [...]     # descartam a mensagem inteira
+  strip_patterns: [...]     # recortam o rodapé fixo do canal
+```
+
+Os canais são intercalados em **round-robin** antes do corte: concatenar e truncar faria o
+primeiro canal ocupar todos os slots. Canal muito prolífico precisa de `per_channel` baixo.
+
+## As três anti-repetições
+
+Elas não são intercambiáveis — cada uma pega um caso que as outras não pegam:
+
+| Onde | O que compara | Pega |
+|---|---|---|
+| `scrapers/promotions._interleave` | chave exata do texto, dentro da leva | o mesmo post copiado literalmente entre canais |
+| `core/history.filter_seen_offers` | chave exata contra o que já foi enviado | o repost do mesmo achado amanhã |
+| `core/history.filter_published_items` | nomes próprios contra o texto dos envios recentes | o mesmo produto reescrito por outro canal |
+| `core/digest.select_offers` | nomes próprios entre as ofertas da leva atual | o mesmo produto chegando por dois canais agora |
+
+A comparação por nome próprio é por proporção, não exata ("Echo Dot 5ª geração" × "Echo Dot 5"),
+e tem duas travas contra falso positivo: nomes presentes em *todos* os envios recentes são pano
+de fundo e são ignorados ("Amazon"), e pelo menos dois nomes precisam coincidir de fato.
 
 ## Resiliência
 
 | Cenário | Comportamento |
 |---------|---------------|
-| Um scraper falha | Jornal enviado com as demais seções, **e um alerta no Telegram** |
-| Uma fonte de cotação falha | Os ativos faltantes são buscados na fonte seguinte, um a um |
-| Menos de `min_sections_for_send` seções | Pipeline aborta e avisa pelo Telegram |
-| LLM retorna 503 | Backoff 10s → 30s → 90s, depois tenta os modelos de reserva |
-| LLM falha de vez | Fallback em texto puro |
-| Telegram rejeita o HTML | Reenvia sem marcação, com as tags removidas |
+| Um canal fora do ar | Os outros seguem; vai só para o log (`status=partial`) |
+| **Todos** os canais fora | `status=error` e alerta no Telegram |
+| Zero ofertas depois dos filtros | Não envia; alerta só se nos últimos dias sempre houve |
+| Canal sem entregar nada há vários envios | Alerta de silêncio crônico (`chronic_silence`) |
+| LLM ligado retorna 503 | Backoff 10s → 30s → 90s, modelos de reserva, depois o template |
+| Telegram rejeita o HTML | Reenvia sem marcação |
 | Mensagem acima de 4096 chars | Dividida sem cortar tags no meio |
 
-Falhas parciais geram alerta **quando faltam dados no jornal final**. Uma fonte que falha mas é
-coberta pelo fallback fica só no log: alertar todo dia sobre algo que não afeta o resultado
-treinaria você a ignorar os alertas.
+Alerta é sobre **resultado**, não sobre fonte: um canal que falha mas é coberto pelos outros
+fica no log. Alertar todo dia sobre algo que não muda o resultado treina você a ignorar os
+alertas — e foi por isso que se acrescentou o alerta de silêncio crônico, que é o caso em que a
+falha some justamente por não atrapalhar hoje.
 
 ## Histórico
 
-`logs/history.json` guarda 30 dias (`history.retention_days`), podados a cada gravação. Serve a
-três coisas: os 3 jornais mais recentes vão ao prompt para a regra anti-repetição, as métricas
-numéricas alimentam o contexto comparativo — `R$ 5,60 (+0,10%) — maior valor em 30 dias` — e os
-títulos já publicados alimentam o rodízio de jogos (`history.repeat_window_days`), que é o que
-impede a mesma oferta de voltar todo dia.
+`logs/history.json` guarda 30 dias (`history.retention_days`), podados a cada gravação, e é
+escrito **só após envio bem-sucedido** — uma mensagem que não chegou não pode suprimir a oferta
+de amanhã. Cada envio grava o texto, as chaves das ofertas publicadas e os canais que ficaram em
+silêncio. Dois envios no mesmo dia são dois registros: gravando um por dia, o das 18h apagaria o
+das 8h.
 
-## Módulos de dados
+## Como achar e validar um canal novo
 
-1. **Clima** — Open-Meteo, entregue por tópico (agora, hoje, máx/mín, chuva, sol, vento, UV), com
-   emoji de condição montado em Python
-2. **Economia** — HG Brasil → yfinance → AwesomeAPI, preenchendo ativo a ativo
-3. **Investimentos** — séries do Banco Central (SGS): Selic, CDI, IPCA e poupança, com juro real
-   calculado em Python e uma "ideia do dia" rotacionada pelo histórico
-4. **Tech** — RSS
-5. **Mundo** — RSS (LLM seleciona 3 fatos globais)
-6. **Curitiba & Paraná** — RSS local (Gazeta do Povo PR, Tribuna PR), até 3 fatos
-7. **Cultura Pop** — RSS
-8. **GitHub Trending** — scraping
-9. **Gaming** — giveaways da GamerPower + ofertas do CheapShark, filtradas por nota, volume de
-   avaliações e faixa de preço, com rodízio entre dias
-10. **Futebol** — jogos via football-data.org + notícias filtradas do GE
+O valor do projeto está em ter **muitos** canais bons.
+
+1. **Achar:** buscar no Telegram por "promoção", "ofertas", "desconto", "achados"; nichos
+   (hardware, livros, games); indicações nos próprios posts.
+2. **Confirmar a prévia:** abrir `https://t.me/s/<canal>` no navegador. Se carregar as
+   mensagens, serve. Se redirecionar para `t.me/<canal>` sem conteúdo, o canal é privado ou
+   desativou a prévia — descartar.
+3. **Pegar o nome canônico:** o handle pode ser apelido. `t.me/s/promobit` responde 200 servindo
+   `ofertasdecomputador`, e `t.me/s/promocoes` serve `nerdofertas`. Use o nome que aparece no
+   `data-post` (o scraper credita por ele), senão o mesmo canal entra duas vezes na lista.
+4. **Validar o parsing:** `python main.py --no-llm --only promotions` com o canal na lista e
+   conferir `text`, `link`, `published` e `coupon`. Canal que posta por imagem rende pouco — o
+   filtro de comprimento mínimo já o esvazia.
+5. **Cadenciar:** canal prolífico precisa de `per_channel` baixo para não afogar os outros.
+6. **Aparar o rodapé:** se o canal cola um bloco fixo em todo post ("Assine o Prime", "me paga
+   um café"), acrescente um `strip_pattern`.
+7. **Validar na VPS**, não só localmente.
+
+Manter a lista **curada**: canal que só repassa afiliado sem cupom, ou que posta muito sorteio,
+entra no `noise_patterns` ou sai da lista.
 
 ## Deploy na VPS (cron)
 
@@ -135,11 +175,12 @@ crontab -e
 ```
 
 ```
-55 5 * * * cd /home/ubuntu/jornal && /home/ubuntu/jornal/.venv/bin/python main.py >> /home/ubuntu/jornal/logs/cron.log 2>&1
+0 8,18 * * * cd /home/ubuntu/promocoes && /home/ubuntu/promocoes/.venv/bin/python main.py >> /home/ubuntu/promocoes/logs/cron.log 2>&1
 ```
 
-Certifique-se de que `config/.env` existe na VPS.
+Manhã e fim de tarde, que é quando as campanhas saem. Certifique-se de que `config/.env` existe
+na VPS.
 
-> **Atenção:** a VPS recebe respostas diferentes das da sua máquina. O CheapShark exige
-> User-Agent descritivo e a AwesomeAPI aplica cota por IP. Valide scrapers **na VPS**, não só
-> localmente — use `python main.py --no-llm --only gaming`.
+> **Atenção:** a VPS recebe respostas diferentes das da sua máquina. Valide canal novo **lá**,
+> com `python main.py --no-llm --only promotions`. Quando algo falhar com código estranho, leia
+> o corpo da resposta antes de teorizar.

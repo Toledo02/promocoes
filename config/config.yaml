@@ -2,10 +2,36 @@ promotions:
   # Prévia web pública do Telegram (https://t.me/s/<canal>): HTML simples, sem bot e sem token.
   # Antes de somar um canal aqui, siga o processo do README ("Como achar e validar um canal"):
   # abrir a prévia no navegador, rodar o scraper só com ele e conferir na VPS.
+  #
+  # Use sempre o nome CANÔNICO do canal, não o apelido: `t.me/s/promobit` responde 200 e serve
+  # o conteúdo de `ofertasdecomputador`, e `promocoes` serve `nerdofertas`. Com o apelido, o
+  # mesmo canal entra duas vezes na lista sem ninguém notar. Validados em 12/09/2026.
+  #
+  # Adicionados em 12/09/2026 a pedido: tênis, roupas, brinquedos infantis e itens de bebê.
+  # Não achei canal dedicado a FERRAMENTAS com prévia pública ativa e conteúdo real — os
+  # handles óbvios (promoferramentas, ferramentasdesconto, ofertasferramentas...) respondem 200
+  # mas sem mensagem nenhuma, e o único que tinha "ferramentas" no nome e posta de verdade
+  # (ferramentasofertas) é na prática um canal de importados genéricos, não de ferramentas. Meu
+  # nicho de ROUPAS também ficou raso: só achei moda masculina validada — "roupasematacado" é
+  # canal B2B de fornecedor/revenda (fabricante, atacado, maquininha de cartão), não promoção
+  # ao consumidor, e descartei.
   telegram_channels:
-    - "promobit"
-    - "promocoesdodia"
-    - "hardmob_promo"
+    - "ofertasdecomputador"   # hardware e periféricos (servido também por t.me/s/promobit)
+    - "promotop"              # generalista (servido também por t.me/s/promocoesdodia)
+    - "hardmob_promo"         # hardware, comunidade Hardmob
+    - "pechinchou"            # generalista
+    - "nerdofertas"           # generalista com foco em eletrônicos
+    - "cupomdodia"            # cupons
+    - "cjpromos"              # games e acessórios (servido também por t.me/s/ofertasgamer)
+    - "teniscertocupons"      # tênis, cupons e lançamentos
+    - "canal21onze"           # tênis de basquete
+    - "urubutenis"            # tênis, lançamentos e cupons
+    - "ofertasmachomoda"      # moda masculina
+    - "promobrinquedo"        # brinquedos, livros e jogos educativos
+    - "promotoysgeek"         # brinquedos, action figures e cultura geek
+    - "promocaozinha"         # bebê/infantil: fralda, roupa, higiene (157 mil inscritos)
+    - "fralda"                # fraldas, lenços umedecidos, pomadas
+    - "babypromokids"         # bebê/infantil, lojas variadas
   # Idade máxima do post. Com 2 envios por dia, 24h garante que nada da noite se perca; o que
   # já foi publicado é barrado pelo histórico, não pela janela.
   max_age_hours: 24
@@ -22,14 +48,30 @@ promotions:
   max_per_coupon: 2
   # Comprimento mínimo do post. Canal que posta por imagem deixa texto de 3 palavras.
   min_text_length: 25
+  # Descartam a mensagem inteira: não é oferta, é captação de seguidor.
   noise_patterns:
     - "sorteio"
     - "participe do grupo"
     - "entre no nosso"
     - "clique aqui para receber"
     - "grupo de whatsapp"
-    - "canal de ofertas"
     - "link na bio"
+
+  # Recortam um trecho da mensagem, não a mensagem: é o rodapé fixo que o canal cola em todo
+  # post. Sem isto, o rodapé ocupa metade do texto e empurra o nome do produto para fora do
+  # recorte. Expressões regulares, sem distinção de maiúsculas; `.*` corta até o fim.
+  strip_patterns:
+    - "mais grupos de ofertas.*"
+    - "assine o amazon prime.*"
+    - "você me paga um café.*"
+    - "ofertas? por tempo limitado.*"
+    - "pegar oferta:?"
+    - "compre aqui:?"
+    - "clique no link.*"
+    - "🏪 ?loja:?"
+    - "🔗"
+    # O `$` precisa tolerar o espaço que sobra onde a URL foi removida.
+    - "link:? *$"
 
 history:
   file: "history.json"
@@ -44,6 +86,11 @@ history:
   lookback_days: 2
   # Por quantos dias uma oferta já publicada continua bloqueada pela chave exata.
   repeat_window_days: 3
+  # Alerta de silêncio crônico: canal que não entregou nada em nenhum dos últimos
+  # `silence_alert_sends` envios, dentro de `silence_alert_days` dias. Com muitos canais, um
+  # canal morto não faz falta no resultado e por isso não dispararia nenhum outro alerta.
+  silence_alert_days: 3
+  silence_alert_sends: 3
 
 formatting:
   # Padrão é o template em Python: o projeto roda sem chave de API. Com `true` (e LLM_API_KEY

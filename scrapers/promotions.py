@@ -14,15 +14,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections import Counter
 from datetime import datetime, timedelta, timezone
 from itertools import zip_longest
-from typing import Any
+from typing import Any, Sequence
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
-from core.utils import BROWSER_HEADERS, ScraperResult, http_get_text, offer_key
+from core.utils import BROWSER_HEADERS, ScraperResult, http_get_text, now_local, offer_key
 
 logger = logging.getLogger(__name__)
 
@@ -65,18 +64,42 @@ def _coupon(text: str) -> str | None:
     return None
 
 
-def _clean_text(text: str) -> str:
+def _trim_edges(text: str) -> str:
+    """Corta as pontas que não carregam palavra: "➡️" na frente, "🛒 👇🏼 |" no fim.
+
+    Sobram sempre, porque o que estava depois delas era um link (removido acima) ou uma
+    chamada de engajamento (removida por `strip_patterns`).
+    """
+    tokens = text.split(" ")
+    while tokens and not re.search(r"\w", tokens[-1]):
+        tokens.pop()
+    while tokens and not re.search(r"\w", tokens[0]):
+        tokens.pop(0)
+    return " ".join(tokens).strip(" -–—|•:;,")
+
+
+def _clean_text(text: str, strip_patterns: Sequence[str] = ()) -> str:
     """Tira do post o que não é a oferta.
 
-    Três coisas atrapalham a leitura e, pior, a deduplicação: a URL crua que o canal cola no
-    meio da frase (a mesma oferta com outro parâmetro de afiliado vira outra chave), a fileira
-    de hashtags no fim, e as sequências de emoji repetido. Nada disso é informação — o link
-    canônico já vem do `data-post` e o preço continua no texto.
+    Quatro coisas atrapalham a leitura e, pior, a deduplicação: a URL crua colada no meio da
+    frase (a mesma oferta com outro parâmetro de afiliado vira outra chave), a fileira de
+    hashtags, as sequências de emoji repetido e o rodapé fixo do canal — "Assine o Amazon
+    Prime", "você me paga um café", "PEGAR OFERTA 👇". O rodapé é o pior dos quatro: é idêntico
+    em todos os posts daquele canal e ocupa metade do texto útil, então empurra para fora do
+    recorte justamente o que identifica o produto.
+
+    Os padrões vêm do config (`promotions.strip_patterns`) porque cada canal tem o seu, e canal
+    novo traz rodapé novo — é config, não código.
     """
     cleaned = _URL_RE.sub(" ", text or "")
     cleaned = _HASHTAG_RE.sub(" ", cleaned)
+    for pattern in strip_patterns:
+        try:
+            cleaned = re.sub(pattern, " ", cleaned, flags=re.IGNORECASE)
+        except re.error:
+            logger.warning("strip_pattern inválido, ignorado: %s", pattern)
     cleaned = _REPEAT_RE.sub(r"\1", cleaned)
-    return " ".join(cleaned.split()).strip(" -–—|•")
+    return _trim_edges(" ".join(cleaned.split()))
 
 
 def _message_datetime(node: Any) -> datetime | None:
@@ -105,6 +128,7 @@ def _parse_channel(
     cutoff: datetime,
     noise: list[str],
     min_length: int = 25,
+    strip_patterns: Sequence[str] = (),
 ) -> list[dict[str, Any]]:
     soup = BeautifulSoup(html, "lxml")
     messages: list[dict[str, Any]] = []
@@ -118,7 +142,7 @@ def _parse_channel(
         if published and published < cutoff:
             continue
 
-        text = _clean_text(text_el.get_text(" ", strip=True))
+        text = _clean_text(text_el.get_text(" ", strip=True), strip_patterns)
         if len(text) < min_length or any(pattern in text.lower() for pattern in noise):
             continue
 
@@ -126,9 +150,12 @@ def _parse_channel(
         permalink = f"https://t.me/{post}" if post else None
         store_url = _external_link(text_el)
 
+        # O nome do canal sai do `data-post`, não do config: vários handles são apelidos que
+        # servem o conteúdo de outro canal (`t.me/s/promobit` devolve `ofertasdecomputador`).
+        # Atribuir a oferta ao apelido publicaria um crédito que não bate com o link.
         messages.append(
             {
-                "channel": channel,
+                "channel": post.split("/")[0] if post else channel,
                 "text": text[:MAX_TEXT_CHARS],
                 # O link publicado é o da mensagem no canal, não o da loja: boa parte das
                 # ofertas só funciona com o cupom, e o cupom está no post — mandar direto para
@@ -171,11 +198,11 @@ def _interleave(per_channel: list[list[dict[str, Any]]], total: int) -> list[dic
     return items
 
 
-async def _read_channel(channel: str, settings, cutoff, noise, per_channel, min_length):
+async def _read_channel(channel: str, settings, cutoff, noise, per_channel, min_length, strip):
     html = await http_get_text(
         TELEGRAM_PREVIEW_URL.format(channel=channel), settings, headers=BROWSER_HEADERS
     )
-    found = _parse_channel(html, channel, cutoff, noise, min_length)[:per_channel]
+    found = _parse_channel(html, channel, cutoff, noise, min_length, strip)[:per_channel]
     if not found:
         logger.info("Canal %s sem ofertas novas na janela", channel)
     return found
@@ -193,18 +220,28 @@ async def fetch(settings) -> ScraperResult:
             error="Nenhum canal em promotions.telegram_channels",
         )
 
+    # O round-robin do `_interleave` prioriza o canal que vem primeiro nesta lista: com mais
+    # canais do que `max_items`, o corte final (`digest.select_offers`) nunca chega a ver os de
+    # trás — foi assim que tênis, brinquedo e bebê ficaram fora da primeira mensagem depois de
+    # somados ao fim da lista. Rotacionar por hora resolve sem precisar de estado: a cada envio
+    # (e a cada hora, se rodar mais vezes) um canal diferente abre a fila, e no fim do dia todos
+    # tiveram a vez.
+    rotation = int(now_local().timestamp() // 3600) % len(channels)
+    channels = channels[rotation:] + channels[:rotation]
+
     max_age_hours = int(cfg.get("max_age_hours", 24))
     per_channel = int(cfg.get("per_channel", 8))
     pool = int(cfg.get("candidate_pool", 30))
     min_length = int(cfg.get("min_text_length", 25))
     noise = [str(p).lower() for p in (cfg.get("noise_patterns") or [])]
+    strip = [str(p) for p in (cfg.get("strip_patterns") or [])]
     cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
 
     # Em paralelo: são dezenas de canais no alvo do projeto, e em série o cron gastaria mais
     # tempo esperando rede do que fazendo qualquer outra coisa.
     results = await asyncio.gather(
         *(
-            _read_channel(channel, settings, cutoff, noise, per_channel, min_length)
+            _read_channel(channel, settings, cutoff, noise, per_channel, min_length, strip)
             for channel in channels
         ),
         return_exceptions=True,
@@ -237,10 +274,13 @@ async def fetch(settings) -> ScraperResult:
         "channels_failed": failed,
     }
 
-    # Todos os canais fora do ar é falha de resultado; alguns fora, com outros entregando, é o
-    # caso `partial` — o alerta correspondente é decisão do orquestrador, não daqui.
-    if failed and len(failed) == len(channels):
-        return ScraperResult(section=section, status="error", data=data, error="; ".join(errors))
+    # Leva vazia é falha de resultado, mesmo sem exceção nenhuma. O Telegram responde 200 com
+    # uma página sem mensagens para canal inexistente, privado ou com a prévia desativada —
+    # derrubar todos os canais de propósito não produz um único erro de HTTP. Com sete canais,
+    # zero oferta em 24h não é um dia quieto: é a coleta quebrada.
+    if not offers:
+        detail = "; ".join(errors) if errors else f"{len(channels)} canais responderam sem ofertas"
+        return ScraperResult(section=section, status="error", data=data, error=detail)
 
     return ScraperResult(
         section=section,

@@ -252,7 +252,9 @@ def _build_alerts(
     for name, error in failures:
         alerts.append(f"❌ {name}: {error}")
 
-    if not offers and history_store.has_recent_sends(history):
+    # Só quando a coleta foi bem: leva vazia já vira `error` no scraper, e dois alertas sobre
+    # o mesmo fato é o começo de se ignorar os dois.
+    if not failures and not offers and history_store.has_recent_sends(history):
         alerts.append(
             "⚠️ Nenhuma oferta sobrou depois dos filtros, e nos últimos dias sempre houve. "
             f"Coletados: {collected} candidatos."

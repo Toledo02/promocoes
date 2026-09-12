@@ -19,12 +19,11 @@ from __future__ import annotations
 import json
 import logging
 import re
-import unicodedata
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from core.utils import now_local, offer_key
+from core.utils import entities, fold, now_local, offer_key
 
 logger = logging.getLogger(__name__)
 
@@ -175,51 +174,12 @@ def filter_seen_offers(
     data["offers"] = kept
 
 
-# Tokens que começam frase ou ligam oração: aparecem em maiúscula sem identificar produto nenhum.
-# Inclui o vocabulário fixo do anúncio de promoção, que abre quase toda mensagem em maiúscula
-# ("Cupom", "Frete", "Menor preço") e faria duas ofertas sem nada em comum parecerem a mesma.
-_NOT_ENTITIES = {
-    "a", "o", "as", "os", "um", "uma", "de", "do", "da", "dos", "das", "em", "no", "na", "nos",
-    "nas", "por", "para", "com", "sem", "sobre", "apos", "ate", "entre", "contra", "durante",
-    "que", "quem", "como", "quando", "onde", "mais", "menos", "novo", "nova", "novos", "novas",
-    "veja", "confira", "saiba", "entenda", "the", "and", "for", "with", "from", "this", "that",
-    "cupom", "cupons", "codigo", "desconto", "descontos", "oferta", "ofertas", "promocao",
-    "promocoes", "preco", "precos", "menor", "maior", "frete", "gratis", "gratuito", "compre",
-    "aproveite", "corram", "ultimas", "unidades", "link", "loja", "site", "app", "hoje",
-    "somente", "apenas", "usando", "pix", "boleto", "cartao", "parcelado", "avista", "reais",
-    "achado", "achados", "baixou", "caiu", "leve", "pague", "ganhe", "receba", "voce", "seu",
-    "sua", "agora", "ainda", "muito", "todos", "todas", "acabou", "volta", "voltou", "chegou",
-}
-
-_ENTITY_RE = re.compile(r"\b[A-ZÀ-ÖØ-Þ][\wÀ-ÿ'’-]{2,}\b")
 _WORD_RE = re.compile(r"[\wÀ-ÿ'’-]+")
 
 
-def _fold(text: str) -> str:
-    """Minúsculas e sem acento, para comparar oferta de canal com texto já enviado."""
-    folded = unicodedata.normalize("NFKD", (text or "").lower())
-    return "".join(char for char in folded if not unicodedata.combining(char))
-
-
-def _entities(title: str) -> set[str]:
-    """Nomes próprios do texto — marca, modelo e loja, que é o que identifica o produto.
-
-    Comparar palavra a palavra não funciona: "Echo Dot 5ª geração por R$ 229 com frete grátis" e
-    "SÓ HOJE! Echo Dot 5 saindo por 229 reais na Amazon" são a mesma oferta e quase não
-    compartilham palavra comum. Nome próprio atravessa a reescrita do canal; o resto, não.
-
-    O genitivo é aparado porque "Levi's" e "Levis" precisam bater.
-    """
-    entities: set[str] = set()
-    for token in _ENTITY_RE.findall(title or ""):
-        folded = re.sub(r"['’]s$", "", _fold(token)).strip("'’-")
-        if len(folded) >= 3 and folded not in _NOT_ENTITIES:
-            entities.add(folded)
-    return entities
-
-
 def _terms(text: str) -> set[str]:
-    return set(_WORD_RE.findall(_fold(text)))
+    """Todas as palavras do texto já enviado — o lado contra o qual os nomes são comparados."""
+    return set(_WORD_RE.findall(fold(text)))
 
 
 # Seção filtrada por cobertura, com o campo da lista, o texto que identifica o item e o mínimo
@@ -276,7 +236,7 @@ def filter_published_items(
 
         for item in original:
             text = str(item.get(text_field, ""))[:_OFFER_TEXT_LIMIT]
-            marks = _entities(text) - background
+            marks = entities(text) - background
             best = max((len(marks & send) for send in sends), default=0)
             if (
                 len(marks) >= min_entities

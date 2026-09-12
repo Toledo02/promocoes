@@ -140,7 +140,18 @@ def test_clean_text_remove_hashtags():
 
 
 def test_clean_text_colapsa_emoji_repetido():
-    assert _clean_text("🔥🔥🔥🔥 Oferta!!!! 🔥") == "🔥 Oferta! 🔥"
+    assert _clean_text("Oferta!!!! do dia") == "Oferta! do dia"
+
+
+def test_clean_text_apara_as_pontas_decorativas():
+    # Sobram sempre: o que vinha depois delas era um link ou uma chamada de engajamento.
+    assert _clean_text("➡️ Echo Dot por R$ 229 🛒 👇") == "Echo Dot por R$ 229"
+
+
+def test_clean_text_corta_o_rodape_do_canal():
+    texto = "Fone JBL por R$ 199 PEGAR OFERTA: Assine o Amazon Prime AGORA, ganhe 1 MÊS GRÁTIS"
+    padroes = ["pegar oferta:?", "assine o amazon prime.*"]
+    assert _clean_text(texto, padroes) == "Fone JBL por R$ 199"
 
 
 def test_clean_text_preserva_o_preco():
@@ -176,6 +187,15 @@ def test_parse_channel_extrai_texto_link_e_data():
     assert oferta["link"] == "https://t.me/promobit/1"
     assert oferta["link_type"] == "canal"
     assert oferta["published"] == AGORA.isoformat()
+
+
+def test_parse_channel_usa_o_nome_canonico_do_canal():
+    # `t.me/s/promobit` responde 200 servindo o conteúdo de `ofertasdecomputador`; atribuir a
+    # oferta ao apelido publicaria um crédito que não bate com o link.
+    html = _pagina(_mensagem("ofertasdecomputador/9", "Monitor LG 27 polegadas por R$ 899", AGORA))
+    [oferta] = _parse_channel(html, "promobit", CORTE, [])
+
+    assert oferta["channel"] == "ofertasdecomputador"
 
 
 def test_parse_channel_publica_o_post_e_nao_a_loja():

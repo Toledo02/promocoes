@@ -1,11 +1,12 @@
-# Versões fixadas: sem pin, um release quebrado de feedparser ou yfinance derruba o cron
-# da VPS num dia qualquer, e a falha só apareceria no jornal da manhã seguinte.
+# Versões fixadas: sem pin, um release quebrado de httpx ou bs4 derruba o cron da VPS num dia
+# qualquer, e a falha só apareceria na hora do envio.
 pyyaml==6.0.3
 python-dotenv==1.2.2
 httpx==0.28.1
-feedparser==6.0.12
 beautifulsoup4==4.15.0
 lxml==6.1.1
 tzdata==2026.2
+
+# Só é usada com `formatting.use_llm: true`. O import é tardio (core/ai_engine.py), então o
+# agente roda sem este pacote instalado — desde que o LLM continue desligado.
 google-genai==2.8.0
-yfinance==1.4.1

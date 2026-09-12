@@ -8,9 +8,8 @@ Rodar com:  python -m pytest -q
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
-
-import pytest
 
 from config.settings import Settings
 from core import history
@@ -19,6 +18,7 @@ from core.digest import format_digest, offer_keys, select_offers
 from core.telegram_sender import inspect_message
 from core.utils import now_local, offer_key
 from main import _silent_channels
+from scrapers import promotions
 
 
 def _envio(texto: str, dias_atras: int = 0, ofertas=None, silenciosos=None, hora="08:00") -> dict:
@@ -225,6 +225,26 @@ def test_select_offers_nao_limita_oferta_sem_cupom():
     assert len(select_offers(ofertas, max_items=8, max_per_coupon=2)) == 5
 
 
+def test_select_offers_descarta_o_mesmo_produto_vindo_de_outro_canal():
+    # Os canais copiam uns aos outros: o mesmo achado sai em três deles na mesma hora, com o
+    # texto reescrito — a deduplicação exata do scraper não pega.
+    ofertas = [
+        _oferta("Mesa Para Escritório Diretor 1,80m Dynamica Preto Ônix por R$ 256,20", "promotop"),
+        _oferta("Mesa Escritório Diretor Dynamica 1,80m Preto Ônix — R$ 256", "cjpromos"),
+    ]
+    escolhidas = select_offers(ofertas, max_items=8, max_per_coupon=2)
+
+    assert [o["channel"] for o in escolhidas] == ["promotop"]
+
+
+def test_select_offers_mantem_produtos_diferentes_do_mesmo_canal():
+    ofertas = [
+        _oferta("Echo Dot 5ª geração na Amazon por R$ 229"),
+        _oferta("Kindle Paperwhite 12 na Amazon por R$ 599"),
+    ]
+    assert len(select_offers(ofertas, max_items=8, max_per_coupon=2)) == 2
+
+
 def test_offer_keys_bate_com_a_chave_do_historico():
     # Se as duas divergirem, a oferta publicada hoje não é reconhecida amanhã.
     ofertas = [_oferta("Echo Dot 5 por R$ 229")]
@@ -302,6 +322,72 @@ def test_chronic_silence_nao_acusa_quem_voltou_hoje():
     historico = history.record(historico, hoje, "t", silent_channels=["voltou"], time_label="18:00")
 
     assert history.chronic_silence(historico, [], 3, 3) == []
+
+
+# --------------------------------------------------------------------------- status da coleta
+
+
+def _pagina(canal: str, texto: str) -> str:
+    return (
+        f'<div class="tgme_widget_message" data-post="{canal}/1">'
+        f'<div class="tgme_widget_message_text">{texto}</div>'
+        f'<time datetime="{now_local().strftime("%Y-%m-%dT%H:%M:%S+00:00")}">agora</time>'
+        "</div>"
+    )
+
+
+def test_leva_vazia_e_falha_de_resultado(monkeypatch):
+    # O Telegram responde 200 com página sem mensagens para canal inexistente ou privado:
+    # derrubar todos os canais de propósito não produz um único erro de HTTP.
+    async def _sem_mensagens(url, settings, **kwargs):
+        return "<html><body></body></html>"
+
+    monkeypatch.setattr(promotions, "http_get_text", _sem_mensagens)
+    settings = Settings(config={"promotions": {"telegram_channels": ["a", "b"]}})
+    resultado = asyncio.run(promotions.fetch(settings))
+
+    assert resultado.status == "error"
+
+
+def test_um_canal_fora_com_outro_entregando_e_partial(monkeypatch):
+    async def _um_quebra(url, settings, **kwargs):
+        if url.endswith("/quebrado"):
+            raise RuntimeError("404 Not Found")
+        return f"<html><body>{_pagina('bom', 'Echo Dot 5ª geração por R$ 229 na Amazon')}</body></html>"
+
+    monkeypatch.setattr(promotions, "http_get_text", _um_quebra)
+    settings = Settings(config={"promotions": {"telegram_channels": ["bom", "quebrado"]}})
+    resultado = asyncio.run(promotions.fetch(settings))
+
+    assert resultado.status == "partial"
+    assert len(resultado.data["offers"]) == 1
+    assert resultado.data["channels_failed"] == ["quebrado"]
+
+
+def test_sem_canal_configurado_e_erro():
+    assert asyncio.run(promotions.fetch(Settings(config={}))).status == "error"
+
+
+def test_rotacao_muda_o_canal_que_abre_a_fila(monkeypatch):
+    # Com mais canais do que max_items, o round-robin sempre despachava o canal 1 primeiro e o
+    # corte final nunca chegava a ver os de trás da lista. A rotação por hora existe para isso:
+    # em horas diferentes, um canal diferente abre a fila.
+    canais = ["a", "b", "c", "d"]
+
+    async def _responde(url, settings, **kwargs):
+        canal = url.rsplit("/", 1)[-1]
+        return _pagina(canal, f"Produto do canal {canal} por R$ {ord(canal)},90 hoje")
+
+    monkeypatch.setattr(promotions, "http_get_text", _responde)
+    settings = Settings(config={"promotions": {"telegram_channels": canais, "max_age_hours": 24}})
+
+    monkeypatch.setattr(promotions, "now_local", lambda: datetime(2026, 9, 12, 0, 0))
+    primeiro_as_0h = asyncio.run(promotions.fetch(settings)).data["offers"][0]["channel"]
+
+    monkeypatch.setattr(promotions, "now_local", lambda: datetime(2026, 9, 12, 5, 0))
+    primeiro_as_5h = asyncio.run(promotions.fetch(settings)).data["offers"][0]["channel"]
+
+    assert primeiro_as_0h != primeiro_as_5h
 
 
 # --------------------------------------------------------------------------- LLM opcional
