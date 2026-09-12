@@ -1,0 +1,65 @@
+promotions:
+  # Prévia web pública do Telegram (https://t.me/s/<canal>): HTML simples, sem bot e sem token.
+  # Antes de somar um canal aqui, siga o processo do README ("Como achar e validar um canal"):
+  # abrir a prévia no navegador, rodar o scraper só com ele e conferir na VPS.
+  telegram_channels:
+    - "promobit"
+    - "promocoesdodia"
+    - "hardmob_promo"
+  # Idade máxima do post. Com 2 envios por dia, 24h garante que nada da noite se perca; o que
+  # já foi publicado é barrado pelo histórico, não pela janela.
+  max_age_hours: 24
+  # Teto por canal antes do round-robin. Canal prolífico (dezenas de posts/dia) afogaria os
+  # outros sem isto.
+  per_channel: 8
+  # Quantas ofertas vão ao ar. O corte é feito depois do histórico, não no scraper.
+  max_items: 8
+  # Candidatos coletados além do que será exibido, para o corte anti-repetição ter de onde
+  # tirar substituto — sem folga, o segundo envio do dia sairia pela metade.
+  candidate_pool: 30
+  # A mesma campanha em cinco produtos tomava a seção inteira: num jornal real, 3 dos 4
+  # achados eram o mesmo cupom OFERTA8DO8.
+  max_per_coupon: 2
+  # Comprimento mínimo do post. Canal que posta por imagem deixa texto de 3 palavras.
+  min_text_length: 25
+  noise_patterns:
+    - "sorteio"
+    - "participe do grupo"
+    - "entre no nosso"
+    - "clique aqui para receber"
+    - "grupo de whatsapp"
+    - "canal de ofertas"
+    - "link na bio"
+
+history:
+  file: "history.json"
+  # Janela do histórico. Dias mais antigos são descartados a cada gravação, então o arquivo
+  # se mantém no mesmo tamanho em vez de crescer para sempre.
+  retention_days: 30
+  # Quantos envios recentes a anti-repetição consulta. São envios, não dias: com 2 por dia,
+  # 4 cobre ontem e hoje.
+  sends_in_lookback: 4
+  # Idade máxima desses envios. Depois de uma interrupção do cron, o envio de um mês atrás
+  # não pode suprimir a oferta de hoje.
+  lookback_days: 2
+  # Por quantos dias uma oferta já publicada continua bloqueada pela chave exata.
+  repeat_window_days: 3
+
+formatting:
+  # Padrão é o template em Python: o projeto roda sem chave de API. Com `true` (e LLM_API_KEY
+  # no .env) o modelo só reescreve as linhas — preço, cupom e link continuam vindo do Python.
+  use_llm: false
+  # Corte do texto da oferta na mensagem. O post traz até 400 chars; o começo identifica o
+  # produto e o resto é frete, parcelamento e apelo.
+  max_offer_chars: 180
+
+orchestrator:
+  scraper_timeout_seconds: 30
+  request_timeout_seconds: 15
+  # Abaixo disto não envia. Mensagem de "nada hoje" é ruído: o canal existe para avisar
+  # quando há achado, não para dar sinal de vida.
+  min_items_for_send: 1
+
+logging:
+  level: "INFO"
+  directory: "logs"
