@@ -93,9 +93,13 @@ history:
   silence_alert_sends: 3
 
 formatting:
-  # Padrão é o template em Python: o projeto roda sem chave de API. Com `true` (e LLM_API_KEY
-  # no .env) o modelo só reescreve as linhas — preço, cupom e link continuam vindo do Python.
-  use_llm: false
+  # `false` cai no template em Python (o projeto roda sem chave de API nesse modo). Ligado, com
+  # LLM_API_KEY no .env, o modelo só reescreve as linhas — preço, cupom e link continuam vindo
+  # do Python; qualquer resposta fora do formato (`_looks_valid`) cai no template na mesma hora.
+  # Testado em 12/09/2026 contra o template puro: número por número, nada foi alterado, só o
+  # nome do produto ficou mais limpo (o regex do template negritava slogan/disclaimer do post
+  # quando não achava "Nome — R$ preço" no formato esperado).
+  use_llm: true
   # Corte do texto da oferta na mensagem. O post traz até 400 chars; o começo identifica o
   # produto e o resto é frete, parcelamento e apelo.
   max_offer_chars: 180
