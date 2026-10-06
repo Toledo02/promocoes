@@ -99,11 +99,13 @@ template — que aí sim seleciona por ordem de chegada, sem julgamento nenhum.
 
 ```yaml
 promotions:
-  telegram_channels: ["ofertasdecomputador", "promotop", ...]
+  telegram_channels:        # tópico → canais; cada tópico vira um subtítulo na mensagem
+    "🏷️ GERAIS": ["pechinchou", "promotop"]
+    "👟 TÊNIS E MODA": ["teniscertocupons", "urubutenis", ...]
   max_age_hours: 24
   per_channel: 8            # teto por canal antes do round-robin
-  candidate_pool: 30        # candidatos coletados
-  max_items: 8              # ofertas publicadas
+  candidate_pool: 60        # candidatos coletados
+  max_items: 20             # ofertas publicadas
   max_per_coupon: 2         # teto por campanha
   noise_patterns: [...]     # descartam a mensagem inteira
   strip_patterns: [...]     # recortam o rodapé fixo do canal

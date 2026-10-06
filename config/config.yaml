@@ -15,23 +15,31 @@ promotions:
   # nicho de ROUPAS também ficou raso: só achei moda masculina validada — "roupasematacado" é
   # canal B2B de fornecedor/revenda (fabricante, atacado, maquininha de cartão), não promoção
   # ao consumidor, e descartei.
+  #
+  # Tópico → canais. Cada tópico vira um subtítulo na mensagem e as ofertas saem nesta ordem
+  # (template e LLM). O título é copiado como está, emoji incluído. Canal novo entra no tópico
+  # dele. A escolha de quais ofertas entram não depende do tópico nem da posição.
   telegram_channels:
-    - "ofertasdecomputador"   # hardware e periféricos (servido também por t.me/s/promobit)
-    - "promotop"              # generalista (servido também por t.me/s/promocoesdodia)
-    - "hardmob_promo"         # hardware, comunidade Hardmob
-    - "pechinchou"            # generalista
-    - "nerdofertas"           # generalista com foco em eletrônicos
-    - "cupomdodia"            # cupons
-    - "cjpromos"              # games e acessórios (servido também por t.me/s/ofertasgamer)
-    - "teniscertocupons"      # tênis, cupons e lançamentos
-    - "canal21onze"           # tênis de basquete
-    - "urubutenis"            # tênis, lançamentos e cupons
-    - "ofertasmachomoda"      # moda masculina
-    - "promobrinquedo"        # brinquedos, livros e jogos educativos
-    - "promotoysgeek"         # brinquedos, action figures e cultura geek
-    - "promocaozinha"         # bebê/infantil: fralda, roupa, higiene (157 mil inscritos)
-    - "fralda"                # fraldas, lenços umedecidos, pomadas
-    - "babypromokids"         # bebê/infantil, lojas variadas
+    "🏷️ GERAIS":
+      - "pechinchou"            # generalista
+      - "promotop"              # generalista (servido também por t.me/s/promocoesdodia)
+    "💻 ELETRÔNICOS E GAMES":
+      - "nerdofertas"           # generalista com foco em eletrônicos
+      - "ofertasdecomputador"   # hardware e periféricos (servido também por t.me/s/promobit)
+      - "hardmob_promo"         # hardware, comunidade Hardmob
+      - "cjpromos"              # games e acessórios (servido também por t.me/s/ofertasgamer)
+    "👟 TÊNIS E MODA":
+      - "teniscertocupons"      # tênis, cupons e lançamentos
+      - "urubutenis"            # tênis, lançamentos e cupons
+      - "ofertasmachomoda"      # moda masculina
+    "🧸 BRINQUEDOS":
+      - "promobrinquedo"        # brinquedos, livros e jogos educativos
+    "👶 BEBÊ E INFANTIL":
+      - "promocaozinha"         # bebê/infantil: fralda, roupa, higiene (157 mil inscritos)
+      - "fralda"                # fraldas, lenços umedecidos, pomadas
+      - "babypromokids"         # bebê/infantil, lojas variadas
+  # Removidos em 06/10/2026 por silêncio crônico (alerta 🔇 em vários envios seguidos):
+  # cupomdodia, promotoysgeek.
   # Idade máxima do post. Com 2 envios por dia, 24h garante que nada da noite se perca; o que
   # já foi publicado é barrado pelo histórico, não pela janela.
   max_age_hours: 24
@@ -41,11 +49,12 @@ promotions:
   # Teto de ofertas publicadas. Com `formatting.use_llm` ligado é o modelo quem escolhe QUAIS,
   # entre todos os candidatos pós-histórico — não é um corte por ordem de chegada. Sem LLM (ou
   # se a API falhar), aí sim é ordem de chegada (`core/digest.select_offers`).
-  max_items: 8
+  max_items: 20
   # Candidatos coletados além do que será exibido. Com o LLM ligado isto não é só folga para
   # substituto do rodízio (como era antes): é o tamanho do lote que o modelo de fato compara
-  # para julgar qual é a melhor oferta — pool maior dá mais material de comparação.
-  candidate_pool: 30
+  # para julgar qual é a melhor oferta — pool maior dá mais material de comparação. Mantenha
+  # em torno de 3x `max_items`: o envio das 18h perde para o histórico tudo que saiu às 8h.
+  candidate_pool: 60
   # A mesma campanha em cinco produtos tomava a seção inteira: num jornal real, 3 dos 4
   # achados eram o mesmo cupom OFERTA8DO8. Com LLM ligado isto também vira instrução do prompt
   # (o modelo já respeita o teto ao escolher); `core/ai_engine._looks_valid` confere e descarta

@@ -25,7 +25,7 @@ python main.py                            # pipeline completo (envia ao Telegram
 python main.py --dry-run                  # monta e imprime, sem enviar
 python main.py --no-llm                   # só coleta e imprime o payload cru
 python main.py --no-llm --only promotions # o mesmo, restrito a uma fonte
-python -m pytest -q                       # 101 testes, sem rede
+python -m pytest -q                       # 108 testes, sem rede
 ```
 
 Ao iterar em canais use `--dry-run`: mostra a mensagem final, os alertas que seriam enviados e o
@@ -42,8 +42,8 @@ grava o histórico **só se enviou**.
 `partial` | `error`; scrapers **nunca propagam exceção**. `partial` quando um canal falhou e
 outros entregaram; `error` só quando todos falharam.
 
-**O scraper devolve um pool, não a lista final.** `candidate_pool` (30) candidatos, `max_items`
-(8) publicados. A folga existe porque o corte final acontece *depois* do histórico: sem ela, o
+**O scraper devolve um pool, não a lista final.** `candidate_pool` (60) candidatos, `max_items`
+(20) publicados. A folga existe porque o corte final acontece *depois* do histórico: sem ela, o
 segundo envio do dia sairia pela metade, já que tudo que a manhã mostrou é removido. Mesmo
 princípio do `candidate_pool` das ofertas de jogos no jornal.
 
@@ -60,6 +60,15 @@ no texto > produto reconhecível > banner de loja vago; mesmo produto em dois ca
 só o de melhor preço; mesmo cupom não passa de `max_per_coupon` escolhas.
 `core/digest.select_offers` (dedup + teto por ordem de chegada, sem julgamento nenhum) é só o
 critério do template — usado com `use_llm: false` ou quando a API falha.
+
+**`telegram_channels` é um mapa tópico → canais, e é ele que divide a mensagem.** Cada tópico
+("🏷️ GERAIS", "👟 TÊNIS E MODA"…) vira um subtítulo `<b>` e as ofertas saem na ordem do config.
+No template, `core/digest.group_by_channel` reordena depois do corte e `format_digest` põe o
+subtítulo a cada troca de tópico; no LLM, cada candidato leva o campo `topic`
+(`offer_topics`), `metadata.topics` dá a ordem e o prompt manda escrever os títulos. Em nenhum
+dos dois o tópico influi em **quais** ofertas entram — só onde aparecem. O scraper lê só a
+lista achatada (`flat_channels`); lista simples sem tópico ainda é aceita e sai sem subtítulo.
+Canal novo entra no tópico dele.
 
 ## Pontos de atenção
 

@@ -21,6 +21,7 @@ from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
+from core.digest import flat_channels
 from core.utils import BROWSER_HEADERS, ScraperResult, http_get_text, now_local, offer_key
 
 logger = logging.getLogger(__name__)
@@ -212,7 +213,7 @@ async def fetch(settings) -> ScraperResult:
     section = "promotions"
     cfg = settings.get("promotions") or {}
 
-    channels = [str(c).strip().lstrip("@") for c in (cfg.get("telegram_channels") or []) if str(c).strip()]
+    channels = flat_channels(cfg.get("telegram_channels"))
     if not channels:
         return ScraperResult(
             section=section,
