@@ -13,8 +13,15 @@ from datetime import datetime, timedelta
 
 from config.settings import Settings
 from core import ai_engine, history
-from core.ai_engine import _looks_valid, _resolve_chosen, generate_digest
-from core.digest import format_digest, offer_keys, select_offers
+from core.ai_engine import _build_user_prompt, _looks_valid, _resolve_chosen, generate_digest
+from core.digest import (
+    FALLBACK_TOPIC,
+    flat_channels,
+    format_digest,
+    group_by_channel,
+    offer_keys,
+    select_offers,
+)
 from core.telegram_sender import inspect_message
 from core.utils import now_local, offer_key
 from main import _silent_channels
@@ -393,8 +400,9 @@ def test_rotacao_muda_o_canal_que_abre_a_fila(monkeypatch):
 # --------------------------------------------------------------------------- LLM opcional
 
 
-def _settings(llm_api_key: str = "", **formatting) -> Settings:
-    return Settings(config={"formatting": formatting}, llm_api_key=llm_api_key)
+def _settings(llm_api_key: str = "", channels=None, **formatting) -> Settings:
+    config = {"formatting": formatting, "promotions": {"telegram_channels": channels or []}}
+    return Settings(config=config, llm_api_key=llm_api_key)
 
 
 def test_sem_llm_configurado_o_resumo_e_o_template():
@@ -498,3 +506,85 @@ def test_generate_digest_cai_no_template_quando_o_modelo_inventa_link(monkeypatc
 
     assert mensagem == format_digest(ofertas)
     assert escolhidas == ofertas
+
+
+# --------------------------------------------------------------------------- agrupamento
+
+
+def test_group_by_channel_segue_a_ordem_do_config():
+    ofertas = [
+        _oferta("Fralda", "fralda"),
+        _oferta("Tênis", "urubutenis"),
+        _oferta("GPU", "cjpromos"),
+    ]
+    ordem = ["cjpromos", "urubutenis", "fralda"]
+
+    assert [o["channel"] for o in group_by_channel(ofertas, ordem)] == ordem
+
+
+def test_group_by_channel_e_estavel_e_manda_canal_desconhecido_para_o_fim():
+    ofertas = [
+        _oferta("A", "fora_da_lista"),
+        _oferta("B", "fralda"),
+        _oferta("C", "pechinchou"),
+        _oferta("D", "fralda"),
+    ]
+    agrupadas = group_by_channel(ofertas, ["@pechinchou", "fralda"])
+
+    assert [o["text"] for o in agrupadas] == ["C", "B", "D", "A"]
+
+
+def test_template_agrupa_sem_mudar_quais_ofertas_entram():
+    ofertas = [_oferta(f"Produto {c} por R$ 10", c) for c in ("fralda", "nerdofertas", "promotop")]
+    _, escolhidas = generate_digest(
+        ofertas,
+        _settings(use_llm=False, channels=["promotop", "nerdofertas", "fralda"]),
+        max_items=2,
+        now=AS_OITO,
+    )
+
+    # O corte continua por ordem de chegada (fralda, nerdofertas); só a exibição muda.
+    assert [o["channel"] for o in escolhidas] == ["nerdofertas", "fralda"]
+
+
+def test_prompt_leva_o_topico_de_cada_candidato():
+    ofertas = [_oferta("Fralda por R$ 10", "fralda"), _oferta("Outro por R$ 5", "desconhecido")]
+    topicos = {"🏷️ GERAIS": ["pechinchou"], "👶 BEBÊ": ["fralda"]}
+    prompt = _build_user_prompt(ofertas, AS_OITO, 8, 2, topicos)
+
+    assert '"topic": "👶 BEBÊ"' in prompt
+    assert f'"topic": "{FALLBACK_TOPIC}"' in prompt
+    assert '"topics": [\n    "🏷️ GERAIS",\n    "👶 BEBÊ",' in prompt
+
+
+def test_template_poe_um_subtitulo_por_topico():
+    topicos = {"🏷️ GERAIS": ["pechinchou", "promotop"], "👟 TÊNIS": ["urubutenis"]}
+    ofertas = [
+        _oferta("Tênis Nike por R$ 199", "urubutenis"),
+        _oferta("Air Fryer por R$ 279", "promotop"),
+        _oferta("Geladeira por R$ 2.912", "pechinchou"),
+    ]
+    mensagem, escolhidas = generate_digest(
+        ofertas, _settings(use_llm=False, channels=topicos), now=AS_OITO
+    )
+
+    assert [o["channel"] for o in escolhidas] == ["pechinchou", "promotop", "urubutenis"]
+    assert mensagem.count("<b>🏷️ GERAIS</b>") == 1
+    assert mensagem.count("<b>👟 TÊNIS</b>") == 1
+    assert mensagem.index("GERAIS") < mensagem.index("Geladeira") < mensagem.index("TÊNIS")
+    assert mensagem.index("TÊNIS") < mensagem.index("Nike")
+
+
+def test_template_sem_topico_no_config_nao_poe_subtitulo():
+    ofertas = [_oferta("Geladeira por R$ 2.912", "pechinchou")]
+    mensagem = format_digest(ofertas, AS_OITO, channels=["pechinchou"])
+
+    assert mensagem == format_digest(ofertas, AS_OITO)
+
+
+def test_flat_channels_aceita_topicos_e_lista():
+    topicos = {"A": ["@um", "dois"], "B": ["tres"]}
+
+    assert flat_channels(topicos) == ["um", "dois", "tres"]
+    assert flat_channels(["@um", "dois"]) == ["um", "dois"]
+    assert flat_channels(None) == []

@@ -34,7 +34,10 @@ from core.digest import (
     SECTION_RULE,
     SECTION_TITLE,
     format_digest,
+    group_by_channel,
+    offer_topics,
     select_offers,
+    topic_order,
 )
 from core.utils import format_date_pt_br, now_local
 
@@ -60,10 +63,15 @@ Rules:
 
    then one blank line before the first offer.
 3. SELECTION. "offers" holds up to metadata.candidate_count candidates — deliberately more than
-   should be published. Choose at most metadata.max_items of them: the best ones, ordered from
-   best deal first to least-best last. If fewer than metadata.max_items are genuinely worth
-   showing, output fewer (down to 1) — never pad the count with a weak offer, and never invent
-   one to reach it.
+   should be published. Choose at most metadata.max_items of them: the best ones. If fewer than
+   metadata.max_items are genuinely worth showing, output fewer (down to 1) — never pad the
+   count with a weak offer, and never invent one to reach it.
+   TOPICS. Each candidate has a "topic". The topic never decides WHETHER an offer is chosen —
+   only where it appears. Lay the chosen offers out topic by topic, following the order of
+   metadata.topics; inside one topic, best deal first. Before the first offer of each topic
+   write the topic title, copied verbatim, as its own line: <b>TOPIC TITLE</b>, followed by
+   one blank line. Skip a topic that has no chosen offer, and never write a title that is not
+   in metadata.topics. If metadata.topics is empty, write no topic titles at all.
 4. HOW TO JUDGE "BEST", in rough order of importance:
    a. A bigger discount or percentage off actually stated in the text beats a smaller one.
    b. A specific, recognisable product (brand + model) beats a vague store-wide banner that
@@ -106,16 +114,23 @@ _HREF_RE = re.compile(r'href="([^"]+)"')
 
 
 def _build_user_prompt(
-    offers: list[dict[str, Any]], moment: datetime, max_items: int, max_per_coupon: int
+    offers: list[dict[str, Any]],
+    moment: datetime,
+    max_items: int,
+    max_per_coupon: int,
+    channels: Any = None,
 ) -> str:
     meta = {
         "header": f"<b>{format_date_pt_br(moment)} — {moment:%H:%M}</b>",
         "candidate_count": len(offers),
         "max_items": max_items,
         "max_per_coupon": max_per_coupon,
+        "topics": topic_order(channels),
         "instruction": (
-            f"Select at most {max_items} of these {len(offers)} candidates — the best deals, "
-            "best first. Rewrite each as one bullet. Copy prices, coupons and links verbatim."
+            f"Select at most {max_items} of these {len(offers)} candidates — the best deals. "
+            "Lay them out under their topic titles, in metadata.topics order, best first "
+            "inside each topic. Rewrite each as one bullet. Copy prices, coupons and links "
+            "verbatim."
         ),
     }
     # Só os campos que a mensagem usa e a seleção precisa julgar. `store_url` fica de fora de
@@ -128,8 +143,11 @@ def _build_user_prompt(
             "link": offer.get("link"),
             "link_type": offer.get("link_type"),
             "channel": offer.get("channel"),
+            # O modelo escreve a mensagem inteira, então os subtítulos que o template põe com
+            # `format_digest` aqui vão pelo prompt: cada candidato leva o título do seu tópico.
+            "topic": topic,
         }
-        for offer in offers
+        for offer, topic in zip(offers, offer_topics(offers, channels))
     ]
     return (
         "Curadoria do resumo de achados a partir destes candidatos.\n\n"
@@ -237,9 +255,11 @@ def generate_digest(
     moment = now or now_local()
     max_chars = int(settings.get("formatting", "max_offer_chars", default=DEFAULT_MAX_OFFER_CHARS))
 
+    channels = settings.get("promotions", "telegram_channels", default=None)
+
     def _template() -> tuple[str, list[dict[str, Any]]]:
-        chosen = select_offers(candidates, max_items, max_per_coupon)
-        return format_digest(chosen, moment, max_chars), chosen
+        chosen = group_by_channel(select_offers(candidates, max_items, max_per_coupon), channels)
+        return format_digest(chosen, moment, max_chars, channels), chosen
 
     if not settings.get("formatting", "use_llm", default=False):
         return _template()
@@ -249,7 +269,7 @@ def generate_digest(
     if not candidates:
         return _template()
 
-    user_prompt = _build_user_prompt(candidates, moment, max_items, max_per_coupon)
+    user_prompt = _build_user_prompt(candidates, moment, max_items, max_per_coupon, channels)
 
     # Um 503 do Gemini é sobrecarga do modelo e costuma durar minutos, não segundos: o intervalo
     # fixo de 10s gastava as três tentativas em menos de um minuto e caía no fallback.

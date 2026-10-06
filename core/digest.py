@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 
 SECTION_RULE = "━━━━━━━━━━━━━━━"
 SECTION_TITLE = "🛒 ACHADOS & PROMOÇÕES"
+# Tópico das ofertas de canal que não está no config — só aparece se o `data-post` trouxer um
+# nome diferente do configurado.
+FALLBACK_TOPIC = "📦 OUTROS"
 
 DEFAULT_MAX_OFFER_CHARS = 180
 
@@ -101,6 +104,60 @@ def select_offers(
     return dedupe_offers(offers, max_per_coupon)[:max_items]
 
 
+def channel_topics(raw: Any) -> list[tuple[str, list[str]]]:
+    """`promotions.telegram_channels` como pares (tópico, canais), na ordem do config.
+
+    O config é um mapa tópico → canais, e é ele que divide a mensagem em blocos ("GERAIS",
+    "TÊNIS E MODA"...). Lista simples, sem tópico, continua aceita e vira um tópico sem título
+    — a mensagem sai sem subtítulos, como antes.
+    """
+    pairs = raw.items() if isinstance(raw, dict) else [("", raw or [])]
+    return [
+        (str(title or "").strip(), [name for name in map(_channel_name, channels or []) if name])
+        for title, channels in pairs
+    ]
+
+
+def flat_channels(raw: Any) -> list[str]:
+    """Todos os canais do config, na ordem, sem o tópico — o que o scraper precisa ler."""
+    return [channel for _, channels in channel_topics(raw) for channel in channels]
+
+
+def _channel_name(channel: Any) -> str:
+    return str(channel).strip().lstrip("@")
+
+
+def offer_topics(offers: list[dict[str, Any]], raw: Any) -> list[str]:
+    """Tópico de cada oferta. Canal fora do config (não deveria acontecer) cai em OUTROS."""
+    topic_of = {
+        channel.lower(): title for title, channels in channel_topics(raw) for channel in channels
+    }
+    fallback = FALLBACK_TOPIC if any(title for title in topic_of.values()) else ""
+    return [topic_of.get(str(offer.get("channel") or "").lower(), fallback) for offer in offers]
+
+
+def topic_order(raw: Any) -> list[str]:
+    """Títulos na ordem de exibição, com OUTROS no fim; vazio quando o config não tem tópico."""
+    titles = [title for title, _ in channel_topics(raw) if title]
+    return [*titles, FALLBACK_TOPIC] if titles else []
+
+
+def group_by_channel(offers: list[dict[str, Any]], raw: Any) -> list[dict[str, Any]]:
+    """Ordena para exibição seguindo a ordem dos canais em `promotions.telegram_channels`.
+
+    Como os canais estão arrumados por tópico, seguir essa ordem já deixa cada tópico contíguo
+    — é o que `format_digest` precisa para pôr um subtítulo por bloco. Estável: dentro do mesmo
+    canal fica a ordem de chegada. Canal fora do config vai para o fim. Só muda a exibição —
+    quais ofertas entram já foi decidido antes. No caminho do LLM quem agrupa é o modelo, pelo
+    campo `topic` do prompt.
+    """
+    position = {channel.lower(): i for i, channel in enumerate(flat_channels(raw))}
+    return sorted(
+        offers,
+        key=lambda offer: position.get(str(offer.get("channel") or "").lower(), len(position)),
+    )
+
+
 def offer_keys(offers: list[dict[str, Any]]) -> list[str]:
     """Chaves das ofertas publicadas, para o histórico."""
     return [offer_key(offer.get("text", "")) for offer in offers if offer.get("text")]
@@ -167,12 +224,15 @@ def format_digest(
     offers: list[dict[str, Any]],
     now: datetime | None = None,
     max_offer_chars: int = DEFAULT_MAX_OFFER_CHARS,
+    channels: Any = None,
 ) -> str:
     """Monta a mensagem em Python — o caminho padrão, que roda sem chave de API.
 
     A convenção de cabeçalho é a do jornal e existe porque o Telegram não tem tamanho de fonte:
     régua, título em CAIXA ALTA dentro de <b> e uma linha em branco antes do conteúdo é o que
-    faz um cabeçalho parecer cabeçalho.
+    faz um cabeçalho parecer cabeçalho. Com `channels` em tópicos, cada bloco ganha o seu
+    subtítulo (`<b>👟 TÊNIS E MODA</b>`) — as ofertas precisam chegar já agrupadas
+    (`group_by_channel`), senão o mesmo tópico aparece duas vezes.
     """
     moment = now or now_local()
     lines = [
@@ -183,7 +243,11 @@ def format_digest(
         "",
     ]
 
-    for offer in offers:
+    current = None
+    for offer, topic in zip(offers, offer_topics(offers, channels)):
+        if topic and topic != current:
+            lines.extend([f"<b>{_escape(topic)}</b>", ""])
+        current = topic
         lines.extend(_offer_lines(offer, max_offer_chars))
         lines.append("")
 
